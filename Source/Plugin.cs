@@ -1,80 +1,73 @@
-using System;
-using System.IO;
-using System.Reflection;
 using BepInEx;
-using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using NetData.Metrics;
+using NetData.Patches;
 
-namespace Template
+namespace NetData
 {
     [BepInPlugin(ModGUID, ModName, ModVersion)]
-    public class TemplatePlugin : BaseUnityPlugin
+    public class NetDataPlugin : BaseUnityPlugin
     {
-        private const string ModName = "Template";
-        private const string ModVersion = "1.0.0";
-        private const string Author = "modAuthorName";
-        private const string ModGUID = Author + "." + ModName;
-        private static string ConfigFileName = ModGUID + ".cfg";
-        private static string ConfigFileFullPath = BepInEx.Paths.ConfigPath + Path.DirectorySeparatorChar + ConfigFileName;
+        internal const string ModGUID = "warpalicious.NetData";
+        internal const string ModName = "NetData";
+        internal const string ModVersion = "1.0.0";
 
-        private readonly Harmony HarmonyInstance = new(ModGUID);
-
-        public static readonly ManualLogSource TemplateLogger = BepInEx.Logging.Logger.CreateLogSource(ModName);
+        internal static ManualLogSource Log = null!;
+        internal static Harmony HarmonyInstance = null!;
+        private static bool _patchesApplied;
 
         public void Awake()
         {
-            Assembly assembly = Assembly.GetExecutingAssembly();
-            HarmonyInstance.PatchAll(assembly);
-            SetupWatcher();
+            Log = Logger;
+            HarmonyInstance = new Harmony(ModGUID);
+
+            // Defer detection until ZNet.instance exists
+            HarmonyInstance.Patch(
+                AccessTools.Method(typeof(ZNet), "Awake"),
+                postfix: new HarmonyMethod(typeof(NetDataPlugin), nameof(ZNetAwakePostfix))
+            );
+        }
+
+        private static void ZNetAwakePostfix(ZNet __instance)
+        {
+            // Patches only need to be applied once (they survive ZNet lifecycle).
+            // MonoBehaviours must be re-attached each time ZNet is created.
+            if (!_patchesApplied)
+            {
+                _patchesApplied = true;
+
+                if (__instance.IsDedicated())
+                {
+                    Log.LogInfo("Dedicated server detected — applying server patches");
+                    HarmonyInstance.PatchAll(typeof(ServerPatches));
+
+                    var sendZDOsMethod = AccessTools.Method(typeof(ZDOMan), "SendZDOs");
+                    if (sendZDOsMethod != null)
+                    {
+                        HarmonyInstance.Patch(sendZDOsMethod,
+                            prefix: new HarmonyMethod(typeof(ServerPatches), nameof(ServerPatches.SendZDOsPrefix)),
+                            postfix: new HarmonyMethod(typeof(ServerPatches), nameof(ServerPatches.SendZDOsPostfix)));
+                        Log.LogInfo("Patched ZDOMan.SendZDOs");
+                    }
+                }
+                else
+                {
+                    Log.LogInfo("Client detected — applying client patches");
+                    HarmonyInstance.PatchAll(typeof(ClientPatches));
+                }
+            }
+
+            // Attach metrics MonoBehaviour every time ZNet is created
+            if (__instance.IsDedicated())
+                __instance.gameObject.AddComponent<ServerMetrics>();
+            else
+                __instance.gameObject.AddComponent<ClientMetrics>();
         }
 
         private void OnDestroy()
         {
-            Config.Save();
-        }
-        
-        private void SetupWatcher()
-        {
-            _lastReloadTime = DateTime.Now;
-            FileSystemWatcher watcher = new(BepInEx.Paths.ConfigPath, ConfigFileName);
-            // Due to limitations of technology this can trigger twice in a row
-            watcher.Changed += ReadConfigValues;
-            watcher.Created += ReadConfigValues;
-            watcher.Renamed += ReadConfigValues;
-            watcher.IncludeSubdirectories = true;
-            watcher.EnableRaisingEvents = true;
-        }
-
-        private DateTime _lastReloadTime;
-        private const long RELOAD_DELAY = 10000000; // One second
-
-        private void ReadConfigValues(object sender, FileSystemEventArgs e)
-        {
-            var now = DateTime.Now;
-            var time = now.Ticks - _lastReloadTime.Ticks;
-            if (!File.Exists(ConfigFileFullPath) || time < RELOAD_DELAY) return;
-
-            try
-            {
-                TemplateLogger.LogInfo("Attempting to reload configuration...");
-                Config.Reload();
-                TemplateLogger.LogInfo("Configuration reloaded successfully!");
-            }
-            catch
-            {
-                TemplateLogger.LogError($"There was an issue loading {ConfigFileName}");
-                return;
-            }
-
-            _lastReloadTime = now;
-
-            // Update any runtime configurations here
-            if (ZNet.instance != null && !ZNet.instance.IsDedicated())
-            {
-                TemplateLogger.LogInfo("Updating runtime configurations...");
-                // Add your configuration update logic here
-            }
+            HarmonyInstance?.UnpatchSelf();
         }
     }
-} 
+}
