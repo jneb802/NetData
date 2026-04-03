@@ -80,6 +80,8 @@ namespace NetData.Patches
                 }
             }
 
+            ServerMetrics.ServerZdosSentCount += sentCount;
+
             ServerMetrics.RecordSendWindow(
                 __state.Uid,
                 __state.SendQueueBytes,

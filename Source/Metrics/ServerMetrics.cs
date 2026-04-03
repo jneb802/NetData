@@ -28,6 +28,7 @@ namespace NetData.Metrics
         internal static int SendBlockedCount;
         internal static int SendLowHeadroomCount;
         internal static int ServerLongFrameCount;
+        internal static int ServerZdosSentCount;
 
         // Console command registration guard
         private static bool _commandsRegistered;
@@ -247,9 +248,12 @@ namespace NetData.Metrics
                         $"|unsent={sendWindow?.MaxUnsentZdosCount ?? 0}|old={sendWindow?.MaxOldestUnsentAgeMs ?? 0f:F0}" +
                         $"|out={outBytes:F0}|in={inBytes:F0}|util={utilization:F2}");
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
-                    // Stale connection handle — skip this peer
+                    NetDataPlugin.Log.LogWarning($"Failed to read stats for peer {p.m_playerName} (uid={p.m_uid}): {e.GetType().Name}: {e.Message}");
+                    if (!first) peerDetails.Append(";");
+                    first = false;
+                    peerDetails.Append($"{p.m_playerName}:error");
                 }
             }
             peerDetails.Append("]");
@@ -262,7 +266,7 @@ namespace NetData.Metrics
                 frameTimeP95.ToString("F2"),
                 ServerLongFrameCount,
                 ZDOMan.instance.NrOfObjects(),
-                ZDOMan.instance.GetSentZDOs(),
+                Mathf.RoundToInt(ServerZdosSentCount / CsvInterval),
                 ZDOMan.instance.GetRecvZDOs(),
                 aiCount,
                 LastSaveDuration.ToString("F1"),
@@ -287,6 +291,7 @@ namespace NetData.Metrics
             SendBlockedCount = 0;
             SendLowHeadroomCount = 0;
             ServerLongFrameCount = 0;
+            ServerZdosSentCount = 0;
         }
 
         internal static void RegisterConsoleCommands()
@@ -312,7 +317,7 @@ namespace NetData.Metrics
                     args.Context.AddString($"Frame p95: {MetricsMath.Percentile(FrameTimeSamplesMs, 0.95f):F1}ms longFrames={ServerLongFrameCount}");
                     args.Context.AddString($"Peers: {peers.Count}");
                     args.Context.AddString($"Total ZDOs: {ZDOMan.instance.NrOfObjects()}");
-                    args.Context.AddString($"ZDOs/sec sent:{ZDOMan.instance.GetSentZDOs()} recv:{ZDOMan.instance.GetRecvZDOs()}");
+                    args.Context.AddString($"ZDOs/sec sent:{ServerZdosSentCount} recv:{ZDOMan.instance.GetRecvZDOs()}");
                     args.Context.AddString($"Active AI: {aiCount}");
                     args.Context.AddString($"Last save: {LastSaveDuration:F0}ms");
                     args.Context.AddString($"Send blocks: {SendBlockedCount} lowHeadroom: {SendLowHeadroomCount}");
